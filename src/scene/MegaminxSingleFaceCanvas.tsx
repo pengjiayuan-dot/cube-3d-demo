@@ -1,7 +1,7 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import { ContactShadows, OrbitControls } from "@react-three/drei";
 import { useRef, useState } from "react";
-import { Group, MathUtils, Vector3 } from "three";
+import { Group, MathUtils, Quaternion, Vector3 } from "three";
 
 import { MegaminxFace } from "@/scene/MegaminxModel";
 
@@ -20,9 +20,10 @@ function SingleFaceModel({ targetAngle }: { targetAngle: number }) {
   return (
     <group ref={groupRef}>
       <MegaminxFace
-        index={0}
         face={{
-          normal: new Vector3(0, 0, 1),
+          center: new Vector3(0, 0, 0),
+          quaternion: new Quaternion(),
+          pentagonRadius: 0.747,
           color: "#3b82f6",
           label: "preview-face",
         }}

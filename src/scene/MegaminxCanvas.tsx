@@ -6,7 +6,7 @@ import { MegaminxModel } from "@/scene/MegaminxModel";
 export function MegaminxCanvas() {
   return (
     <Canvas camera={{ position: [0, 0.5, 5.3], fov: 42 }} dpr={[1, 2]}>
-      <color attach="background" args={["#06101f"]} />
+      <color attach="background" args={["#1a2540"]} />
       <ambientLight intensity={1.2} />
       <directionalLight position={[4, 5, 4]} intensity={2.4} />
       <pointLight position={[-3, -2, 3]} intensity={2} color="#2dd4bf" />

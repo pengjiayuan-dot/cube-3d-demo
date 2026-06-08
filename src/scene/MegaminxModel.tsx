@@ -1,8 +1,8 @@
 import { useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
 import {
   DoubleSide,
   Group,
+  Matrix4,
   Quaternion,
   Shape,
   ShapeGeometry,
@@ -11,7 +11,9 @@ import {
 } from "three";
 
 type FaceSpec = {
-  normal: Vector3;
+  center: Vector3;
+  quaternion: Quaternion;
+  pentagonRadius: number;
   color: string;
   label: string;
 };
@@ -35,7 +37,7 @@ function createPentagonShape(radius: number) {
   const shape = new Shape();
 
   for (let index = 0; index < 5; index += 1) {
-    const angle = Math.PI / 2 + (index * Math.PI * 2) / 5;
+    const angle = (index * Math.PI * 2) / 5;
     const x = Math.cos(angle) * radius;
     const y = Math.sin(angle) * radius;
 
@@ -156,9 +158,11 @@ function createEdgeShape(R: number, t: number) {
   return shrinkShape(shape, 0.94);
 }
 
-function buildFaceSpecs() {
+function buildFaceSpecs(): FaceSpec[] {
   const phi = (1 + Math.sqrt(5)) / 2;
-  const rawNormals = [
+  const invPhi = 1 / phi;
+
+  const rawNormals: [number, number, number][] = [
     [0, 1, phi],
     [0, -1, phi],
     [0, 1, -phi],
@@ -173,35 +177,99 @@ function buildFaceSpecs() {
     [-phi, 0, -1],
   ];
 
-  return rawNormals.map(([x, y, z], index) => ({
-    normal: new Vector3(x, y, z).normalize(),
-    color: FACE_COLORS[index],
-    label: `face-${index + 1}`,
-  }));
+  // Standard regular dodecahedron vertices (circumradius = sqrt(3)).
+  const rawVertices: [number, number, number][] = [];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        rawVertices.push([sx, sy, sz]);
+      }
+    }
+  }
+  for (const a of [-phi, phi]) {
+    for (const b of [-invPhi, invPhi]) {
+      rawVertices.push([0, a, b]);
+      rawVertices.push([b, 0, a]);
+      rawVertices.push([a, b, 0]);
+    }
+  }
+
+  // Scale so the dodecahedron's inradius matches the previous design (≈ 0.978).
+  const targetInradius = 0.978;
+  // Inradius of the unscaled dodecahedron with vertices (±1,±1,±1) ∪ (0,±φ,±1/φ) perms
+  // is φ² / √(1+φ²) = φ² / √(2+φ).
+  const standardInradius = (phi * phi) / Math.sqrt(2 + phi);
+  const scale = targetInradius / standardInradius;
+
+  const vertices = rawVertices.map(([x, y, z]) => new Vector3(x, y, z).multiplyScalar(scale));
+  const normals = rawNormals.map(([x, y, z]) => new Vector3(x, y, z).normalize());
+
+  return normals.map((normal, index) => {
+    // Pick the 5 vertices that lie on this face: those with the maximum
+    // projection onto the outward normal.
+    const projections = vertices.map((v) => v.dot(normal));
+    const maxProjection = Math.max(...projections);
+    const onFace = vertices
+      .filter((_, i) => Math.abs(projections[i] - maxProjection) < 1e-4)
+      .map((v) => v.clone());
+
+    const center = onFace
+      .reduce((acc, v) => acc.add(v), new Vector3())
+      .multiplyScalar(1 / onFace.length);
+
+    // Build a local frame (u, v, n) where n is the outward normal and u points
+    // from the face center to the first canonical vertex (for stable rotation
+    // alignment across all 12 faces).
+    const u = onFace[0].clone().sub(center).normalize();
+    const n = normal.clone();
+    const vAxis = new Vector3().crossVectors(n, u).normalize();
+
+    const matrix = new Matrix4().makeBasis(u, vAxis, n);
+    const quaternion = new Quaternion().setFromRotationMatrix(matrix);
+
+    const pentagonRadius = onFace[0].distanceTo(center);
+
+    return {
+      center,
+      quaternion,
+      pentagonRadius,
+      color: FACE_COLORS[index],
+      label: `face-${index + 1}`,
+    };
+  });
 }
 
-export function MegaminxFace({ face, index }: { face: FaceSpec; index: number }) {
-  const rotation = useMemo(() => {
-    return new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), face.normal);
-  }, [face.normal]);
-  const position = useMemo(() => face.normal.clone().multiplyScalar(1.46), [face.normal]);
+export function MegaminxFace({ face }: { face: FaceSpec }) {
+  const { center, quaternion, pentagonRadius } = face;
 
-  const outerGeometry = useMemo(() => new ShapeGeometry(createPentagonShape(0.72)), []);
+  const outerGeometry = useMemo(
+    () => new ShapeGeometry(createPentagonShape(pentagonRadius)),
+    [pentagonRadius],
+  );
 
-  const centerRadius = 0.19;
-  const stickerRadius = 0.64;
+  const centerRadius = pentagonRadius * 0.264;
+  const stickerRadius = pentagonRadius * 0.889;
   const t = 0.4;
 
-  const centerGeometry = useMemo(() => new CircleGeometry(centerRadius * 0.94, 32), []);
-  const cornerGeometry = useMemo(() => new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)), []);
-  const edgeGeometry = useMemo(() => new ShapeGeometry(createEdgeShape(stickerRadius, t)), []);
+  const centerGeometry = useMemo(
+    () => new CircleGeometry(centerRadius * 0.94, 32),
+    [centerRadius],
+  );
+  const cornerGeometry = useMemo(
+    () => new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)),
+    [stickerRadius, centerRadius],
+  );
+  const edgeGeometry = useMemo(
+    () => new ShapeGeometry(createEdgeShape(stickerRadius, t)),
+    [stickerRadius],
+  );
 
   return (
-    <group name={face.label} position={position} quaternion={rotation}>
+    <group name={face.label} position={center} quaternion={quaternion}>
       <mesh geometry={outerGeometry}>
         <meshStandardMaterial color="#020617" roughness={0.82} metalness={0.18} side={DoubleSide} />
       </mesh>
-      
+
       {/* Center piece */}
       <mesh name="center" geometry={centerGeometry} position={[0, 0, 0.026]}>
         <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
@@ -209,7 +277,7 @@ export function MegaminxFace({ face, index }: { face: FaceSpec; index: number })
 
       {/* Corners and Edges */}
       {Array.from({ length: 5 }).map((_, i) => (
-        <group key={i} rotation={[0, 0, Math.PI / 2 + (Math.PI * 2 / 5) * -i]}>
+        <group key={i} rotation={[0, 0, (Math.PI * 2 / 5) * -i]}>
           <mesh name={`corner-${i}`} geometry={cornerGeometry} position={[0, 0, 0.026]}>
             <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
           </mesh>
@@ -218,12 +286,6 @@ export function MegaminxFace({ face, index }: { face: FaceSpec; index: number })
           </mesh>
         </group>
       ))}
-
-      {/* Center cap mechanism piece */}
-      <mesh position={[0, 0, -0.022]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[0.68, 0.62, 0.08, 5, 1, false, Math.PI / 5]} />
-        <meshStandardMaterial color={index % 2 === 0 ? "#101827" : "#111f2e"} roughness={0.9} />
-      </mesh>
     </group>
   );
 }
@@ -232,23 +294,10 @@ export function MegaminxModel() {
   const groupRef = useRef<Group>(null);
   const faces = useMemo(buildFaceSpecs, []);
 
-  useFrame((_, delta) => {
-    if (!groupRef.current) {
-      return;
-    }
-
-    groupRef.current.rotation.y += delta * 0.22;
-    groupRef.current.rotation.x = -0.18;
-  });
-
   return (
     <group ref={groupRef} rotation={[0.18, -0.35, 0.1]}>
-      <mesh>
-        <dodecahedronGeometry args={[1.23, 0]} />
-        <meshStandardMaterial color="#08111f" roughness={0.92} metalness={0.12} />
-      </mesh>
-      {faces.map((face, index) => (
-        <MegaminxFace key={face.label} face={face} index={index} />
+      {faces.map((face) => (
+        <MegaminxFace key={face.label} face={face} />
       ))}
     </group>
   );

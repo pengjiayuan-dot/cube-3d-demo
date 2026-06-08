@@ -8,7 +8,7 @@ export function ScenePlaceholder() {
         <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:36px_36px]" />
         <div className="absolute left-1/2 top-1/2 size-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-teal-300/10 blur-3xl" />
 
-        <div className="relative flex h-full min-h-[472px] flex-col justify-between">
+        <div className="relative flex h-full min-h-[472px] flex-col justify-between gap-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm uppercase tracking-[0.3em] text-teal-100/70">Megaminx Draft</p>
