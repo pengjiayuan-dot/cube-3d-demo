@@ -1,0 +1,47 @@
+import { Canvas } from "@react-three/fiber";
+import { ContactShadows, OrbitControls } from "@react-three/drei";
+import { useRef } from "react";
+import { Group, Vector3 } from "three";
+
+import { MegaminxFace } from "@/scene/MegaminxModel";
+
+function SingleFaceModel() {
+  const groupRef = useRef<Group>(null);
+
+  return (
+    <group ref={groupRef}>
+      <MegaminxFace
+        index={0}
+        face={{
+          normal: new Vector3(0, 0, 1),
+          color: "#3b82f6", // Blue face for preview
+          label: "preview-face",
+        }}
+      />
+    </group>
+  );
+}
+
+export function MegaminxSingleFaceCanvas() {
+  return (
+    <Canvas camera={{ position: [0, 0, 4.5], fov: 42 }} dpr={[1, 2]}>
+      <color attach="background" args={["#06101f"]} />
+      <ambientLight intensity={1.2} />
+      <directionalLight position={[4, 5, 4]} intensity={2.4} />
+      <pointLight position={[-3, -2, 3]} intensity={2} color="#2dd4bf" />
+      <pointLight position={[3, -1, -2]} intensity={1.2} color="#38bdf8" />
+
+      <SingleFaceModel />
+
+      <ContactShadows position={[0, -1.8, 0]} opacity={0.38} scale={7} blur={2.8} far={4} />
+      <OrbitControls
+        autoRotate={false}
+        enableDamping
+        dampingFactor={0.08}
+        maxDistance={7}
+        minDistance={2}
+        rotateSpeed={0.75}
+      />
+    </Canvas>
+  );
+}

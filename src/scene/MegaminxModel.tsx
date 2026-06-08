@@ -1,14 +1,13 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import {
-  BufferGeometry,
   DoubleSide,
   Group,
-  LineBasicMaterial,
   Quaternion,
   Shape,
   ShapeGeometry,
   Vector3,
+  CircleGeometry,
 } from "three";
 
 type FaceSpec = {
@@ -51,25 +50,119 @@ function createPentagonShape(radius: number) {
   return shape;
 }
 
-function createPentagonPoints(radius: number, z = 0.035) {
-  return Array.from({ length: 5 }, (_, index) => {
-    const angle = Math.PI / 2 + (index * Math.PI * 2) / 5;
-    return new Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, z);
-  });
+function lineCircleIntersection(A: Vector3, B: Vector3, R: number): Vector3 | null {
+  const dx = B.x - A.x;
+  const dy = B.y - A.y;
+  const a = dx * dx + dy * dy;
+  const b = 2 * (A.x * dx + A.y * dy);
+  const c = A.x * A.x + A.y * A.y - R * R;
+  const det = b * b - 4 * a * c;
+  if (det < 0) return null;
+  const t = (-b - Math.sqrt(det)) / (2 * a);
+  if (t >= 0 && t <= 1) {
+    return new Vector3(A.x + t * dx, A.y + t * dy, 0);
+  }
+  return null;
 }
 
-function createRadialLineGeometry(innerRadius: number, outerRadius: number) {
-  const points: Vector3[] = [];
+function intersectLines(p1: Vector3, d1: Vector3, p2: Vector3, d2: Vector3): Vector3 | null {
+  const det = d1.x * d2.y - d1.y * d2.x;
+  if (Math.abs(det) < 1e-6) return null;
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const u = (dx * d2.y - dy * d2.x) / det;
+  return new Vector3(p1.x + u * d1.x, p1.y + u * d1.y, 0);
+}
 
-  for (let index = 0; index < 5; index += 1) {
-    const angle = Math.PI / 2 + (index * Math.PI * 2) / 5;
-    points.push(
-      new Vector3(Math.cos(angle) * innerRadius, Math.sin(angle) * innerRadius, 0.045),
-      new Vector3(Math.cos(angle) * outerRadius, Math.sin(angle) * outerRadius, 0.045),
-    );
+function shrinkShape(shape: Shape, scale: number) {
+  const pts = shape.getPoints(8);
+  let cx = 0, cy = 0;
+  for (const p of pts) {
+    cx += p.x;
+    cy += p.y;
   }
+  cx /= pts.length;
+  cy /= pts.length;
 
-  return new BufferGeometry().setFromPoints(points);
+  const newShape = new Shape();
+  for (let i = 0; i < pts.length; i++) {
+    const nx = cx + (pts[i].x - cx) * scale;
+    const ny = cy + (pts[i].y - cy) * scale;
+    if (i === 0) newShape.moveTo(nx, ny);
+    else newShape.lineTo(nx, ny);
+  }
+  newShape.closePath();
+  return newShape;
+}
+
+function createCornerShape(R: number, t: number, Rc: number) {
+  const shape = new Shape();
+  const angle = (Math.PI * 2) / 5;
+  const v0 = new Vector3(R, 0, 0);
+  const v1 = new Vector3(Math.cos(angle) * R, Math.sin(angle) * R, 0);
+  const v4 = new Vector3(Math.cos(-angle) * R, Math.sin(-angle) * R, 0);
+
+  const p1 = new Vector3().lerpVectors(v0, v1, t);
+  const p4 = new Vector3().lerpVectors(v0, v4, t);
+  const pInner = new Vector3().addVectors(p1, p4).sub(v0);
+
+  const i1 = lineCircleIntersection(p1, pInner, Rc);
+  const i2 = lineCircleIntersection(p4, pInner, Rc);
+
+  shape.moveTo(v0.x, v0.y);
+  shape.lineTo(p1.x, p1.y);
+  if (i1 && i2) {
+    shape.lineTo(i1.x, i1.y);
+    const a1 = Math.atan2(i1.y, i1.x);
+    const a2 = Math.atan2(i2.y, i2.x);
+    shape.absarc(0, 0, Rc, a1, a2, true);
+    shape.lineTo(p4.x, p4.y);
+  } else {
+    shape.lineTo(pInner.x, pInner.y);
+    shape.lineTo(p4.x, p4.y);
+  }
+  return shrinkShape(shape, 0.94);
+}
+
+function createEdgeShape(R: number, t: number, _Rc: number) {
+  const shape = new Shape();
+  const angle = (Math.PI * 2) / 5;
+  const v0 = new Vector3(R, 0, 0);
+  const v1 = new Vector3(Math.cos(angle) * R, Math.sin(angle) * R, 0);
+  const v2 = new Vector3(Math.cos(angle * 2) * R, Math.sin(angle * 2) * R, 0);
+  const v4 = new Vector3(Math.cos(-angle) * R, Math.sin(-angle) * R, 0);
+
+  // Apex (outer tip): midpoint of pentagon edge v0 -> v1.
+  const M = new Vector3().lerpVectors(v0, v1, 0.5);
+
+  // Waist directions: parallel to the slant edges of the two adjacent corner blocks.
+  // Corner at v0: slant edge p1 -> pInner has direction (v4 - v0).
+  // Corner at v1: slant edge has direction (v2 - v1).
+  const d1 = new Vector3().subVectors(v4, v0).normalize();
+  const d2 = new Vector3().subVectors(v2, v1).normalize();
+
+  // Anchor: base endpoints lie on the same circle as the corners' pInner vertices.
+  const p1 = new Vector3().lerpVectors(v0, v1, t);
+  const p4 = new Vector3().lerpVectors(v0, v4, t);
+  const pInner = new Vector3().addVectors(p1, p4).sub(v0);
+  const Ri = pInner.length();
+
+  // Solve |M + s * d| = Ri, take the nearer (smaller positive) root.
+  const c = M.lengthSq() - Ri * Ri;
+  const b1 = M.dot(d1);
+  const s1 = -b1 - Math.sqrt(Math.max(b1 * b1 - c, 0));
+  const b2 = M.dot(d2);
+  const s2 = -b2 - Math.sqrt(Math.max(b2 * b2 - c, 0));
+
+  const baseA = new Vector3(M.x + s1 * d1.x, M.y + s1 * d1.y, 0);
+  const baseB = new Vector3(M.x + s2 * d2.x, M.y + s2 * d2.y, 0);
+
+  shape.moveTo(M.x, M.y);
+  shape.lineTo(baseB.x, baseB.y);
+  shape.lineTo(baseA.x, baseA.y);
+  shape.closePath();
+
+  return shrinkShape(shape, 0.94);
 }
 
 function buildFaceSpecs() {
@@ -96,35 +189,47 @@ function buildFaceSpecs() {
   }));
 }
 
-function MegaminxFace({ face, index }: { face: FaceSpec; index: number }) {
+export function MegaminxFace({ face, index }: { face: FaceSpec; index: number }) {
   const rotation = useMemo(() => {
     return new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), face.normal);
   }, [face.normal]);
   const position = useMemo(() => face.normal.clone().multiplyScalar(1.46), [face.normal]);
 
   const outerGeometry = useMemo(() => new ShapeGeometry(createPentagonShape(0.72)), []);
-  const stickerGeometry = useMemo(() => new ShapeGeometry(createPentagonShape(0.64)), []);
-  const centerGeometry = useMemo(() => new ShapeGeometry(createPentagonShape(0.3)), []);
-  const outerLineGeometry = useMemo(() => new BufferGeometry().setFromPoints(createPentagonPoints(0.72)), []);
-  const centerLineGeometry = useMemo(() => new BufferGeometry().setFromPoints(createPentagonPoints(0.3, 0.055)), []);
-  const radialGeometry = useMemo(() => createRadialLineGeometry(0.3, 0.64), []);
-  const lineMaterial = useMemo(() => new LineBasicMaterial({ color: "#020617", linewidth: 2 }), []);
+
+  const centerRadius = 0.19;
+  const stickerRadius = 0.64;
+  const t = 0.4;
+
+  const centerGeometry = useMemo(() => new CircleGeometry(centerRadius * 0.94, 32), []);
+  const cornerGeometry = useMemo(() => new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)), []);
+  const edgeGeometry = useMemo(() => new ShapeGeometry(createEdgeShape(stickerRadius, t, centerRadius)), []);
 
   return (
     <group name={face.label} position={position} quaternion={rotation}>
       <mesh geometry={outerGeometry}>
         <meshStandardMaterial color="#020617" roughness={0.82} metalness={0.18} side={DoubleSide} />
       </mesh>
-      <mesh geometry={stickerGeometry} position={[0, 0, 0.026]}>
+      
+      {/* Center piece */}
+      <mesh name="center" geometry={centerGeometry} position={[0, 0, 0.026]}>
         <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
       </mesh>
-      <mesh geometry={centerGeometry} position={[0, 0, 0.058]}>
-        <meshStandardMaterial color={face.color} roughness={0.32} metalness={0.08} side={DoubleSide} />
-      </mesh>
-      <lineLoop geometry={outerLineGeometry} material={lineMaterial} />
-      <lineLoop geometry={centerLineGeometry} material={lineMaterial} />
-      <lineSegments geometry={radialGeometry} material={lineMaterial} />
-      <mesh position={[0, 0, -0.022]}>
+
+      {/* Corners and Edges */}
+      {Array.from({ length: 5 }).map((_, i) => (
+        <group key={i} rotation={[0, 0, (Math.PI * 2 / 5) * -i]}>
+          <mesh name={`corner-${i}`} geometry={cornerGeometry} position={[0, 0, 0.026]}>
+            <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
+          </mesh>
+          <mesh name={`edge-${i}`} geometry={edgeGeometry} position={[0, 0, 0.026]}>
+            <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Center cap mechanism piece */}
+      <mesh position={[0, 0, -0.022]} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[0.68, 0.62, 0.08, 5, 1]} />
         <meshStandardMaterial color={index % 2 === 0 ? "#101827" : "#111f2e"} roughness={0.9} />
       </mesh>
