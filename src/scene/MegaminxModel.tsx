@@ -65,15 +65,6 @@ function lineCircleIntersection(A: Vector3, B: Vector3, R: number): Vector3 | nu
   return null;
 }
 
-function intersectLines(p1: Vector3, d1: Vector3, p2: Vector3, d2: Vector3): Vector3 | null {
-  const det = d1.x * d2.y - d1.y * d2.x;
-  if (Math.abs(det) < 1e-6) return null;
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  const u = (dx * d2.y - dy * d2.x) / det;
-  return new Vector3(p1.x + u * d1.x, p1.y + u * d1.y, 0);
-}
-
 function shrinkShape(shape: Shape, scale: number) {
   const pts = shape.getPoints(8);
   let cx = 0, cy = 0;
@@ -124,7 +115,7 @@ function createCornerShape(R: number, t: number, Rc: number) {
   return shrinkShape(shape, 0.94);
 }
 
-function createEdgeShape(R: number, t: number, _Rc: number) {
+function createEdgeShape(R: number, t: number) {
   const shape = new Shape();
   const angle = (Math.PI * 2) / 5;
   const v0 = new Vector3(R, 0, 0);
@@ -203,7 +194,7 @@ export function MegaminxFace({ face, index }: { face: FaceSpec; index: number })
 
   const centerGeometry = useMemo(() => new CircleGeometry(centerRadius * 0.94, 32), []);
   const cornerGeometry = useMemo(() => new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)), []);
-  const edgeGeometry = useMemo(() => new ShapeGeometry(createEdgeShape(stickerRadius, t, centerRadius)), []);
+  const edgeGeometry = useMemo(() => new ShapeGeometry(createEdgeShape(stickerRadius, t)), []);
 
   return (
     <group name={face.label} position={position} quaternion={rotation}>
@@ -218,7 +209,7 @@ export function MegaminxFace({ face, index }: { face: FaceSpec; index: number })
 
       {/* Corners and Edges */}
       {Array.from({ length: 5 }).map((_, i) => (
-        <group key={i} rotation={[0, 0, (Math.PI * 2 / 5) * -i]}>
+        <group key={i} rotation={[0, 0, Math.PI / 2 + (Math.PI * 2 / 5) * -i]}>
           <mesh name={`corner-${i}`} geometry={cornerGeometry} position={[0, 0, 0.026]}>
             <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
           </mesh>
@@ -230,7 +221,7 @@ export function MegaminxFace({ face, index }: { face: FaceSpec; index: number })
 
       {/* Center cap mechanism piece */}
       <mesh position={[0, 0, -0.022]} rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[0.68, 0.62, 0.08, 5, 1]} />
+        <cylinderGeometry args={[0.68, 0.62, 0.08, 5, 1, false, Math.PI / 5]} />
         <meshStandardMaterial color={index % 2 === 0 ? "#101827" : "#111f2e"} roughness={0.9} />
       </mesh>
     </group>
