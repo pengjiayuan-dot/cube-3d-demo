@@ -1,4 +1,4 @@
-import { Move3D } from "lucide-react";
+import { MegaminxCanvas } from "@/scene/MegaminxCanvas";
 
 export function ScenePlaceholder() {
   return (
@@ -9,23 +9,20 @@ export function ScenePlaceholder() {
       <div className="relative flex h-full min-h-[472px] flex-col justify-between">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm uppercase tracking-[0.3em] text-teal-100/70">Scene Slot</p>
-            <h3 className="mt-2 text-2xl font-semibold text-white">3D 画布占位</h3>
+            <p className="text-sm uppercase tracking-[0.3em] text-teal-100/70">Megaminx Draft</p>
+            <h3 className="mt-2 text-2xl font-semibold text-white">五魔方 3D 原型</h3>
           </div>
           <span className="rounded-full border border-white/10 bg-black/30 px-3 py-1.5 text-xs text-slate-300">
-            WebGL Ready
+            可拖拽观察
           </span>
         </div>
 
-        <div className="mx-auto flex aspect-square w-full max-w-[360px] items-center justify-center">
-          <div className="pentagon-frame relative flex size-72 items-center justify-center">
-            <div className="absolute size-48 rotate-[18deg] rounded-[32%] border border-teal-200/40 bg-teal-200/[0.03]" />
-            <div className="absolute size-60 rotate-[54deg] rounded-[32%] border border-sky-200/20" />
-            <div className="absolute size-32 rotate-[90deg] rounded-[32%] border border-white/15" />
-            <div className="flex size-20 items-center justify-center rounded-3xl border border-teal-300/40 bg-slate-950/80 text-teal-100 shadow-[0_0_36px_rgba(45,212,191,0.2)]">
-              <Move3D className="size-9" />
-            </div>
+        <div className="relative mx-auto h-[360px] w-full overflow-hidden rounded-[1.5rem] border border-white/10 bg-slate-950/80 md:h-[430px]">
+          <div className="absolute inset-x-6 top-6 z-10 flex items-center justify-between text-xs text-slate-400">
+            <span>12 个五边形面</span>
+            <span>正十二面体布局</span>
           </div>
+          <MegaminxCanvas />
         </div>
 
         <div className="grid gap-3 rounded-3xl border border-white/10 bg-black/25 p-4 backdrop-blur sm:grid-cols-3">
@@ -39,7 +36,7 @@ export function ScenePlaceholder() {
           </div>
           <div>
             <p className="text-xs text-slate-500">模型</p>
-            <p className="mt-1 text-sm text-slate-200">待接入五魔方</p>
+            <p className="mt-1 text-sm text-slate-200">静态五魔方原型</p>
           </div>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { Box, Braces, Compass, Cuboid, Play, Route, Sparkles } from "lucide-react";
+import { Box, Braces, Cuboid, Play, Route, Sparkles } from "lucide-react";
 
 import { MilestoneCard } from "@/components/MilestoneCard";
 import { ScenePlaceholder } from "@/components/ScenePlaceholder";
@@ -7,12 +7,12 @@ const milestones = [
   {
     title: "项目框架",
     description: "Vite、React、TypeScript 与 Tailwind 已作为基础工程骨架。",
-    status: "当前阶段",
+    status: "已完成",
   },
   {
     title: "3D 场景",
-    description: "预留 React Three Fiber 场景入口，后续接入相机、灯光与控制器。",
-    status: "下一步",
+    description: "已接入 React Three Fiber 画布、光照、轨道控制和静态五魔方原型。",
+    status: "当前阶段",
   },
   {
     title: "五魔方几何",
@@ -51,15 +51,15 @@ export default function Home() {
             <div className="space-y-5">
               <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-4 py-2 text-sm text-slate-300">
                 <Sparkles className="size-4 text-teal-200" />
-                短期目标：先搭好可运行、可预览、可扩展的项目框架
+                短期目标：先做一个可在浏览器观察的五魔方 3D 原型
               </div>
               <h2 className="max-w-3xl text-5xl font-semibold leading-tight tracking-tight text-white md:text-6xl">
-                为五魔方建模预留清晰的前端骨架。
+                先把五魔方的正十二面体形态立起来。
               </h2>
               <p className="max-w-2xl text-lg leading-8 text-slate-300">
-                当前页面只提供项目框架和 3D 画布占位，不包含具体五魔方模型实现。后续可以在
+                当前版本已接入一个静态 3D 原型：12 个彩色五边形面按正十二面体方向排布，可拖拽旋转观察。后续可以在
                 <code className="mx-1 rounded bg-white/10 px-1.5 py-0.5 text-teal-100">src/scene</code>
-                中逐步接入 Three.js 场景、几何结构和交互控制。
+                中继续细化块体切分、转动轴和状态映射。
               </p>
             </div>
 
@@ -92,7 +92,7 @@ export default function Home() {
         </section>
 
         <footer className="flex flex-col gap-3 border-t border-white/10 py-6 text-sm text-slate-400 md:flex-row md:items-center md:justify-between">
-          <span>下一步建议：在 3D 场景入口中接入相机、灯光和 OrbitControls。</span>
+          <span>下一步建议：把当前面片原型细化成真实块体，并建立每层转动分组。</span>
           <span className="inline-flex items-center gap-2">
             <Box className="size-4 text-teal-200" />
             预留模块：src/components、src/pages、src/scene、src/hooks
