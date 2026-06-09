@@ -353,9 +353,24 @@ type Animation = {
   movables: Movable[];
 };
 
+type MoveRecord = {
+  faceIndex: number;
+  direction: 1 | -1;
+};
+
+type ReorientAnimation = {
+  startQuat: Quaternion;
+  targetQuat: Quaternion;
+  elapsed: number;
+  duration: number;
+};
+
 export type MegaminxModelHandle = {
   rotateFront: (direction: 1 | -1) => boolean;
   isAnimating: () => boolean;
+  undoAll: () => boolean;
+  canUndo: () => boolean;
+  shuffle: () => boolean;
 };
 
 type MegaminxModelProps = {
@@ -378,6 +393,12 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
     const pieceGroupsRef = useRef<Map<string, Group>>(new Map());
     const facePlateGroupsRef = useRef<Map<number, Group>>(new Map());
     const animationRef = useRef<Animation | null>(null);
+    const reorientRef = useRef<ReorientAnimation | null>(null);
+    const moveHistoryRef = useRef<MoveRecord[]>([]);
+    const autoQueueRef = useRef<MoveRecord[]>([]);
+    const pendingAutoMoveRef = useRef<MoveRecord | null>(null);
+    const recordAutoMovesRef = useRef(false);
+    const pauseRef = useRef(0);
     const lastFrontFace = useRef<number>(-1);
     const frontFaceRef = useRef<number>(-1);
     const { camera } = useThree();
@@ -432,16 +453,38 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
       return result;
     };
 
-    const rotateFront = (direction: 1 | -1) => {
+    const isFaceFacingCamera = (faceIndex: number): boolean => {
+      return detectFrontFace() === faceIndex;
+    };
+
+    const startReorientToFace = (faceIndex: number): boolean => {
+      if (!rootRef.current) return false;
+      const face = faces[faceIndex];
+      const worldNormal = face.normal.clone().applyQuaternion(rootRef.current.quaternion);
+      const cameraDir = camera.position.clone().sub(rootRef.current.position).normalize();
+      const dot = worldNormal.dot(cameraDir);
+      if (dot > 0.95) return false; // already facing camera
+
+      const deltaQuat = new Quaternion().setFromUnitVectors(worldNormal, cameraDir);
+      const targetQuat = deltaQuat.multiply(rootRef.current.quaternion.clone());
+
+      reorientRef.current = {
+        startQuat: rootRef.current.quaternion.clone(),
+        targetQuat,
+        elapsed: 0,
+        duration: 0.4,
+      };
+      return true;
+    };
+
+    const rotateFace = (faceIndex: number, direction: 1 | -1): boolean => {
       if (animationRef.current) return false;
-      const faceIndex = frontFaceRef.current >= 0 ? frontFaceRef.current : detectFrontFace();
       if (faceIndex < 0) return false;
 
       const face = faces[faceIndex];
       const movables = collectLayerMovables(faceIndex);
       if (movables.length === 0) return false;
 
-      // F: clockwise from observer = -72° around outward normal.
       const angle = direction * -((Math.PI * 2) / 5);
 
       animationRef.current = {
@@ -454,13 +497,118 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
       return true;
     };
 
+    const rotateFront = (direction: 1 | -1) => {
+      if (animationRef.current || reorientRef.current) return false;
+      if (autoQueueRef.current.length > 0) return false;
+      const faceIndex = frontFaceRef.current >= 0 ? frontFaceRef.current : detectFrontFace();
+      if (faceIndex < 0) return false;
+
+      const success = rotateFace(faceIndex, direction);
+      if (success) {
+        moveHistoryRef.current.push({ faceIndex, direction });
+      }
+      return success;
+    };
+
+    const processNextAutoMove = () => {
+      if (autoQueueRef.current.length === 0) return;
+      const next = autoQueueRef.current.shift()!;
+      if (!isFaceFacingCamera(next.faceIndex) && startReorientToFace(next.faceIndex)) {
+        pendingAutoMoveRef.current = next;
+      } else {
+        rotateFace(next.faceIndex, next.direction);
+        if (recordAutoMovesRef.current) {
+          moveHistoryRef.current.push(next);
+        }
+      }
+    };
+
+    const undoAll = () => {
+      if (moveHistoryRef.current.length === 0) return false;
+      if (autoQueueRef.current.length > 0) return false;
+
+      const reversed = moveHistoryRef.current
+        .slice()
+        .reverse()
+        .map((m) => ({ faceIndex: m.faceIndex, direction: (m.direction * -1) as 1 | -1 }));
+      autoQueueRef.current = reversed;
+      moveHistoryRef.current = [];
+      recordAutoMovesRef.current = false;
+
+      if (!animationRef.current && !reorientRef.current) {
+        processNextAutoMove();
+      }
+      return true;
+    };
+
+    const shuffle = () => {
+      if (autoQueueRef.current.length > 0) return false;
+
+      const moves: MoveRecord[] = [];
+      let lastFace = -1;
+      for (let i = 0; i < 18; i++) {
+        let faceIndex: number;
+        do {
+          faceIndex = Math.floor(Math.random() * faces.length);
+        } while (faceIndex === lastFace);
+        lastFace = faceIndex;
+        const direction: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+        moves.push({ faceIndex, direction });
+      }
+      autoQueueRef.current = moves;
+      recordAutoMovesRef.current = true;
+
+      if (!animationRef.current && !reorientRef.current) {
+        processNextAutoMove();
+      }
+      return true;
+    };
+
     useImperativeHandle(ref, () => ({
       rotateFront,
       isAnimating: () => animationRef.current !== null,
+      undoAll,
+      canUndo: () => moveHistoryRef.current.length > 0,
+      shuffle,
     }));
 
     useFrame((_, delta) => {
       if (!rootRef.current) return;
+
+      // Pause between reorientation and layer rotation.
+      if (pauseRef.current > 0) {
+        pauseRef.current -= delta;
+        if (pauseRef.current <= 0) {
+          pauseRef.current = 0;
+          const pending = pendingAutoMoveRef.current;
+          if (pending) {
+            pendingAutoMoveRef.current = null;
+            rotateFace(pending.faceIndex, pending.direction);
+            if (recordAutoMovesRef.current) {
+              moveHistoryRef.current.push(pending);
+            }
+          }
+        }
+        return;
+      }
+
+      // Drive reorientation animation (whole-model rotation toward target face).
+      const reorient = reorientRef.current;
+      if (reorient) {
+        reorient.elapsed = Math.min(reorient.elapsed + delta, reorient.duration);
+        const t = reorient.elapsed / reorient.duration;
+        const eased = t * t * (3 - 2 * t);
+        rootRef.current.quaternion.copy(
+          reorient.startQuat.clone().slerp(reorient.targetQuat, eased)
+        );
+
+        if (reorient.elapsed >= reorient.duration) {
+          rootRef.current.quaternion.copy(reorient.targetQuat);
+          reorientRef.current = null;
+          pauseRef.current = 0.18;
+        }
+        return;
+      }
 
       // Drive any active rotation animation.
       const anim = animationRef.current;
@@ -489,11 +637,16 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
             m.group.quaternion.copy(finalQuat).multiply(m.baseQuaternion);
           }
           animationRef.current = null;
+
+          // If there are queued auto moves, process the next one (with reorientation).
+          if (autoQueueRef.current.length > 0) {
+            processNextAutoMove();
+          }
         }
       }
 
-      // Front-face detection (paused while animating to avoid jitter).
-      if (!animationRef.current && onFrontFaceChange) {
+      // Front-face detection (paused while animating or reorienting to avoid jitter).
+      if (!animationRef.current && !reorientRef.current && onFrontFaceChange) {
         const idx = detectFrontFace();
         frontFaceRef.current = idx;
         if (idx !== lastFrontFace.current) {

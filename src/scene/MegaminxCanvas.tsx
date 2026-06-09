@@ -54,6 +54,23 @@ export function MegaminxCanvas() {
           >
             F
           </button>
+          <span className="mx-1 h-4 w-px bg-white/20" />
+          <button
+            type="button"
+            onClick={() => handleRef.current?.shuffle()}
+            className="rounded-full px-3 py-1 transition hover:bg-white/10"
+            aria-label="随机打乱"
+          >
+            打乱
+          </button>
+          <button
+            type="button"
+            onClick={() => handleRef.current?.undoAll()}
+            className="rounded-full px-3 py-1 transition hover:bg-white/10"
+            aria-label="还原魔方"
+          >
+            还原
+          </button>
         </div>
       </div>
 
