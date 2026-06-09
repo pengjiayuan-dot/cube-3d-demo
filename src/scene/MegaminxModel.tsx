@@ -1,5 +1,13 @@
-import { useMemo, useRef } from "react";
 import {
+  forwardRef,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { Text } from "@react-three/drei";
+import {
+  CircleGeometry,
   DoubleSide,
   Group,
   Matrix4,
@@ -7,47 +15,26 @@ import {
   Shape,
   ShapeGeometry,
   Vector3,
-  CircleGeometry,
 } from "three";
 
-type FaceSpec = {
-  center: Vector3;
-  quaternion: Quaternion;
-  pentagonRadius: number;
-  color: string;
-  label: string;
-};
-
-const FACE_COLORS = [
-  "#f8fafc",
-  "#f43f5e",
-  "#22c55e",
-  "#3b82f6",
-  "#f97316",
-  "#facc15",
-  "#a855f7",
-  "#14b8a6",
-  "#ec4899",
-  "#84cc16",
-  "#06b6d4",
-  "#fb7185",
-];
+import {
+  buildDodecahedronGeometry,
+  buildSlots,
+  type FaceFrame,
+  type Slot,
+  type SlotKind,
+} from "@/scene/megaminx/geometry";
+import { FACE_COLORS } from "@/scene/megaminx/colors";
 
 function createPentagonShape(radius: number) {
   const shape = new Shape();
-
-  for (let index = 0; index < 5; index += 1) {
-    const angle = (index * Math.PI * 2) / 5;
+  for (let i = 0; i < 5; i += 1) {
+    const angle = (i * Math.PI * 2) / 5;
     const x = Math.cos(angle) * radius;
     const y = Math.sin(angle) * radius;
-
-    if (index === 0) {
-      shape.moveTo(x, y);
-    } else {
-      shape.lineTo(x, y);
-    }
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
   }
-
   shape.closePath();
   return shape;
 }
@@ -61,15 +48,14 @@ function lineCircleIntersection(A: Vector3, B: Vector3, R: number): Vector3 | nu
   const det = b * b - 4 * a * c;
   if (det < 0) return null;
   const t = (-b - Math.sqrt(det)) / (2 * a);
-  if (t >= 0 && t <= 1) {
-    return new Vector3(A.x + t * dx, A.y + t * dy, 0);
-  }
+  if (t >= 0 && t <= 1) return new Vector3(A.x + t * dx, A.y + t * dy, 0);
   return null;
 }
 
 function shrinkShape(shape: Shape, scale: number) {
   const pts = shape.getPoints(8);
-  let cx = 0, cy = 0;
+  let cx = 0;
+  let cy = 0;
   for (const p of pts) {
     cx += p.x;
     cy += p.y;
@@ -77,15 +63,15 @@ function shrinkShape(shape: Shape, scale: number) {
   cx /= pts.length;
   cy /= pts.length;
 
-  const newShape = new Shape();
-  for (let i = 0; i < pts.length; i++) {
+  const out = new Shape();
+  for (let i = 0; i < pts.length; i += 1) {
     const nx = cx + (pts[i].x - cx) * scale;
     const ny = cy + (pts[i].y - cy) * scale;
-    if (i === 0) newShape.moveTo(nx, ny);
-    else newShape.lineTo(nx, ny);
+    if (i === 0) out.moveTo(nx, ny);
+    else out.lineTo(nx, ny);
   }
-  newShape.closePath();
-  return newShape;
+  out.closePath();
+  return out;
 }
 
 function createCornerShape(R: number, t: number, Rc: number) {
@@ -125,22 +111,15 @@ function createEdgeShape(R: number, t: number) {
   const v2 = new Vector3(Math.cos(angle * 2) * R, Math.sin(angle * 2) * R, 0);
   const v4 = new Vector3(Math.cos(-angle) * R, Math.sin(-angle) * R, 0);
 
-  // Apex (outer tip): midpoint of pentagon edge v0 -> v1.
   const M = new Vector3().lerpVectors(v0, v1, 0.5);
-
-  // Waist directions: parallel to the slant edges of the two adjacent corner blocks.
-  // Corner at v0: slant edge p1 -> pInner has direction (v4 - v0).
-  // Corner at v1: slant edge has direction (v2 - v1).
   const d1 = new Vector3().subVectors(v4, v0).normalize();
   const d2 = new Vector3().subVectors(v2, v1).normalize();
 
-  // Anchor: base endpoints lie on the same circle as the corners' pInner vertices.
   const p1 = new Vector3().lerpVectors(v0, v1, t);
   const p4 = new Vector3().lerpVectors(v0, v4, t);
   const pInner = new Vector3().addVectors(p1, p4).sub(v0);
   const Ri = pInner.length();
 
-  // Solve |M + s * d| = Ri, take the nearer (smaller positive) root.
   const c = M.lengthSq() - Ri * Ri;
   const b1 = M.dot(d1);
   const s1 = -b1 - Math.sqrt(Math.max(b1 * b1 - c, 0));
@@ -154,151 +133,502 @@ function createEdgeShape(R: number, t: number) {
   shape.lineTo(baseB.x, baseB.y);
   shape.lineTo(baseA.x, baseA.y);
   shape.closePath();
-
   return shrinkShape(shape, 0.94);
 }
 
-function buildFaceSpecs(): FaceSpec[] {
-  const phi = (1 + Math.sqrt(5)) / 2;
-  const invPhi = 1 / phi;
+type StickerSpec = {
+  kind: SlotKind;
+  indexInFace: number;
+  color: string;
+  face: FaceFrame;
+};
 
-  const rawNormals: [number, number, number][] = [
-    [0, 1, phi],
-    [0, -1, phi],
-    [0, 1, -phi],
-    [0, -1, -phi],
-    [1, phi, 0],
-    [-1, phi, 0],
-    [1, -phi, 0],
-    [-1, -phi, 0],
-    [phi, 0, 1],
-    [-phi, 0, 1],
-    [phi, 0, -1],
-    [-phi, 0, -1],
-  ];
+type PieceData = {
+  slot: Slot;
+  stickers: StickerSpec[];
+};
 
-  // Standard regular dodecahedron vertices (circumradius = sqrt(3)).
-  const rawVertices: [number, number, number][] = [];
-  for (const sx of [-1, 1]) {
-    for (const sy of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        rawVertices.push([sx, sy, sz]);
-      }
+function buildPieces(faces: FaceFrame[], slots: Slot[]): PieceData[] {
+  const cornerSlots = slots.filter((s) => s.kind === "corner");
+  const edgeSlots = slots.filter((s) => s.kind === "edge");
+  const centerSlots = slots.filter((s) => s.kind === "center");
+
+  const pieces: PieceData[] = slots.map((slot) => ({ slot, stickers: [] }));
+  const findPiece = (slot: Slot) => pieces.find((p) => p.slot.id === slot.id)!;
+
+  faces.forEach((face) => {
+    const color = FACE_COLORS[face.index];
+    const centerSlot = centerSlots.find((s) => s.faces[0] === face.index);
+    if (centerSlot) {
+      findPiece(centerSlot).stickers.push({
+        kind: "center",
+        indexInFace: 0,
+        color,
+        face,
+      });
     }
-  }
-  for (const a of [-phi, phi]) {
-    for (const b of [-invPhi, invPhi]) {
-      rawVertices.push([0, a, b]);
-      rawVertices.push([b, 0, a]);
-      rawVertices.push([a, b, 0]);
+
+    for (let i = 0; i < 5; i += 1) {
+      const anchorIndex = (5 - i) % 5;
+      const anchor = face.vertices[anchorIndex];
+      const slot = cornerSlots.find((s) => s.center.distanceTo(anchor) < 1e-3);
+      if (!slot) continue;
+      findPiece(slot).stickers.push({
+        kind: "corner",
+        indexInFace: i,
+        color,
+        face,
+      });
     }
-  }
 
-  // Scale so the dodecahedron's inradius matches the previous design (≈ 0.978).
-  const targetInradius = 0.978;
-  // Inradius of the unscaled dodecahedron with vertices (±1,±1,±1) ∪ (0,±φ,±1/φ) perms
-  // is φ² / √(1+φ²) = φ² / √(2+φ).
-  const standardInradius = (phi * phi) / Math.sqrt(2 + phi);
-  const scale = targetInradius / standardInradius;
-
-  const vertices = rawVertices.map(([x, y, z]) => new Vector3(x, y, z).multiplyScalar(scale));
-  const normals = rawNormals.map(([x, y, z]) => new Vector3(x, y, z).normalize());
-
-  return normals.map((normal, index) => {
-    // Pick the 5 vertices that lie on this face: those with the maximum
-    // projection onto the outward normal.
-    const projections = vertices.map((v) => v.dot(normal));
-    const maxProjection = Math.max(...projections);
-    const onFace = vertices
-      .filter((_, i) => Math.abs(projections[i] - maxProjection) < 1e-4)
-      .map((v) => v.clone());
-
-    const center = onFace
-      .reduce((acc, v) => acc.add(v), new Vector3())
-      .multiplyScalar(1 / onFace.length);
-
-    // Build a local frame (u, v, n) where n is the outward normal and u points
-    // from the face center to the first canonical vertex (for stable rotation
-    // alignment across all 12 faces).
-    const u = onFace[0].clone().sub(center).normalize();
-    const n = normal.clone();
-    const vAxis = new Vector3().crossVectors(n, u).normalize();
-
-    const matrix = new Matrix4().makeBasis(u, vAxis, n);
-    const quaternion = new Quaternion().setFromRotationMatrix(matrix);
-
-    const pentagonRadius = onFace[0].distanceTo(center);
-
-    return {
-      center,
-      quaternion,
-      pentagonRadius,
-      color: FACE_COLORS[index],
-      label: `face-${index + 1}`,
-    };
+    for (let i = 0; i < 5; i += 1) {
+      const a = (5 - i) % 5;
+      const b = (a + 1) % 5;
+      const midpoint = face.vertices[a]
+        .clone()
+        .add(face.vertices[b])
+        .multiplyScalar(0.5);
+      const slot = edgeSlots.find((s) => s.center.distanceTo(midpoint) < 1e-3);
+      if (!slot) continue;
+      findPiece(slot).stickers.push({
+        kind: "edge",
+        indexInFace: i,
+        color,
+        face,
+      });
+    }
   });
+
+  return pieces;
 }
 
-export function MegaminxFace({ face }: { face: FaceSpec }) {
-  const { center, quaternion, pentagonRadius } = face;
-
-  const outerGeometry = useMemo(
-    () => new ShapeGeometry(createPentagonShape(pentagonRadius)),
-    [pentagonRadius],
-  );
-
+function buildStickerGeometries(pentagonRadius: number) {
   const centerRadius = pentagonRadius * 0.264;
   const stickerRadius = pentagonRadius * 0.889;
   const t = 0.4;
 
-  const centerGeometry = useMemo(
-    () => new CircleGeometry(centerRadius * 0.94, 32),
-    [centerRadius],
-  );
-  const cornerGeometry = useMemo(
-    () => new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)),
-    [stickerRadius, centerRadius],
-  );
-  const edgeGeometry = useMemo(
-    () => new ShapeGeometry(createEdgeShape(stickerRadius, t)),
-    [stickerRadius],
-  );
+  return {
+    pentagonGeometry: new ShapeGeometry(createPentagonShape(pentagonRadius)),
+    centerGeometry: new CircleGeometry(centerRadius * 0.94, 32),
+    cornerGeometry: new ShapeGeometry(createCornerShape(stickerRadius, t, centerRadius)),
+    edgeGeometry: new ShapeGeometry(createEdgeShape(stickerRadius, t)),
+  };
+}
+
+const ONES = new Vector3(1, 1, 1);
+
+/**
+ * For a sticker that belongs to a piece sitting at `slot`, compute its
+ * transform expressed in the piece's local frame.
+ */
+function computeStickerLocalTransform(spec: StickerSpec, slot: Slot) {
+  const faceWorld = new Matrix4().compose(spec.face.center, spec.face.quaternion, ONES);
+
+  const rotZ = spec.kind === "center" ? 0 : ((Math.PI * 2) / 5) * -spec.indexInFace;
+  const inFace = new Matrix4().makeRotationZ(rotZ);
+  const lift = new Matrix4().makeTranslation(0, 0, 0.026);
+
+  const stickerWorld = new Matrix4()
+    .multiplyMatrices(faceWorld, inFace)
+    .multiply(lift);
+
+  const slotWorld = new Matrix4().compose(slot.center, slot.quaternion, ONES);
+  const slotInverse = new Matrix4().copy(slotWorld).invert();
+  const local = new Matrix4().multiplyMatrices(slotInverse, stickerWorld);
+
+  const pos = new Vector3();
+  const quat = new Quaternion();
+  const scale = new Vector3();
+  local.decompose(pos, quat, scale);
+  return { position: pos, quaternion: quat };
+}
+
+function computeFacePlateTransform(face: FaceFrame) {
+  return { position: face.center.clone(), quaternion: face.quaternion.clone() };
+}
+
+type StickerMeshProps = {
+  spec: StickerSpec;
+  slot: Slot;
+  geometries: ReturnType<typeof buildStickerGeometries>;
+  showLabel?: boolean;
+};
+
+function StickerMesh({ spec, slot, geometries, showLabel }: StickerMeshProps) {
+  const transform = useMemo(() => computeStickerLocalTransform(spec, slot), [spec, slot]);
+  const labelTransform = useMemo(() => computeLabelLocalTransform(spec, slot), [spec, slot]);
+  const geometry =
+    spec.kind === "center"
+      ? geometries.centerGeometry
+      : spec.kind === "corner"
+        ? geometries.cornerGeometry
+        : geometries.edgeGeometry;
+
+  const fontSize = spec.face.pentagonRadius * 0.1;
+  const labelText =
+    spec.kind === "center"
+      ? `M${spec.face.index}`
+      : spec.kind === "corner"
+        ? `${spec.face.index}.C${spec.indexInFace}`
+        : `${spec.face.index}.E${spec.indexInFace}`;
 
   return (
-    <group name={face.label} position={center} quaternion={quaternion}>
-      <mesh geometry={outerGeometry}>
-        <meshStandardMaterial color="#020617" roughness={0.82} metalness={0.18} side={DoubleSide} />
+    <group>
+      <mesh
+        geometry={geometry}
+        position={transform.position}
+        quaternion={transform.quaternion}
+      >
+        <meshStandardMaterial color={spec.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
       </mesh>
-
-      {/* Center piece */}
-      <mesh name="center" geometry={centerGeometry} position={[0, 0, 0.026]}>
-        <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
-      </mesh>
-
-      {/* Corners and Edges */}
-      {Array.from({ length: 5 }).map((_, i) => (
-        <group key={i} rotation={[0, 0, (Math.PI * 2 / 5) * -i]}>
-          <mesh name={`corner-${i}`} geometry={cornerGeometry} position={[0, 0, 0.026]}>
-            <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
-          </mesh>
-          <mesh name={`edge-${i}`} geometry={edgeGeometry} position={[0, 0, 0.026]}>
-            <meshStandardMaterial color={face.color} roughness={0.45} metalness={0.04} side={DoubleSide} />
-          </mesh>
-        </group>
-      ))}
+      {showLabel && (
+        <Text
+          position={labelTransform.position}
+          quaternion={labelTransform.quaternion}
+          fontSize={fontSize}
+          color="#f8fafc"
+          outlineColor="#0f172a"
+          outlineWidth={fontSize * 0.18}
+          outlineBlur={fontSize * 0.04}
+          anchorX="center"
+          anchorY="middle"
+          fontWeight={600}
+        >
+          {labelText}
+        </Text>
+      )}
     </group>
   );
 }
 
-export function MegaminxModel() {
-  const groupRef = useRef<Group>(null);
-  const faces = useMemo(buildFaceSpecs, []);
+/**
+ * Compute label transform in piece-local frame:
+ * 1. Pick label position in face-local 2D (depends on sticker kind & indexInFace).
+ * 2. Lift along face normal.
+ * 3. Convert to world via face frame.
+ * 4. Convert to piece-local via slot inverse.
+ */
+function computeLabelLocalTransform(spec: StickerSpec, slot: Slot) {
+  const R = spec.face.pentagonRadius;
+  const angle = ((Math.PI * 2) / 5) * -spec.indexInFace;
+  let localX = 0;
+  let localY = 0;
+  if (spec.kind === "corner") {
+    localX = Math.cos(angle) * R * 0.62;
+    localY = Math.sin(angle) * R * 0.62;
+  } else if (spec.kind === "edge") {
+    localX = Math.cos(angle + Math.PI / 5) * R * 0.5;
+    localY = Math.sin(angle + Math.PI / 5) * R * 0.5;
+  }
+  // Build label transform in face-local frame: translate (localX, localY, 0.03), no rotation.
+  const labelInFace = new Matrix4().makeTranslation(localX, localY, 0.03);
+  const faceWorld = new Matrix4().compose(spec.face.center, spec.face.quaternion, ONES);
+  const labelWorld = new Matrix4().multiplyMatrices(faceWorld, labelInFace);
+
+  const slotWorld = new Matrix4().compose(slot.center, slot.quaternion, ONES);
+  const slotInverse = new Matrix4().copy(slotWorld).invert();
+  const local = new Matrix4().multiplyMatrices(slotInverse, labelWorld);
+
+  const pos = new Vector3();
+  const quat = new Quaternion();
+  const scale = new Vector3();
+  local.decompose(pos, quat, scale);
+  return { position: pos, quaternion: quat };
+}
+
+const ROTATION_DURATION = 0.32;
+
+type Movable = {
+  id: string;
+  group: Group;
+  basePosition: Vector3;
+  baseQuaternion: Quaternion;
+};
+
+type Animation = {
+  axis: Vector3;
+  pivot: Vector3;
+  angle: number;
+  elapsed: number;
+  movables: Movable[];
+};
+
+export type MegaminxModelHandle = {
+  rotateFront: (direction: 1 | -1) => boolean;
+  isAnimating: () => boolean;
+};
+
+type MegaminxModelProps = {
+  onFrontFaceChange?: (faceIndex: number) => void;
+  showLabels?: boolean;
+};
+
+export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>(
+  function MegaminxModel({ onFrontFaceChange, showLabels = false }, ref) {
+    const { faces, pieces, geometries } = useMemo(() => {
+      const dodec = buildDodecahedronGeometry();
+      const slots = buildSlots(dodec.faces, dodec.vertices);
+      const pieces = buildPieces(dodec.faces, slots);
+      const geometries = buildStickerGeometries(dodec.faces[0].pentagonRadius);
+
+      return { faces: dodec.faces, slots, pieces, geometries };
+    }, []);
+
+    const rootRef = useRef<Group>(null);
+    const pieceGroupsRef = useRef<Map<string, Group>>(new Map());
+    const facePlateGroupsRef = useRef<Map<number, Group>>(new Map());
+    const animationRef = useRef<Animation | null>(null);
+    const lastFrontFace = useRef<number>(-1);
+    const frontFaceRef = useRef<number>(-1);
+    const { camera } = useThree();
+
+    const detectFrontFace = () => {
+      if (!rootRef.current) return -1;
+      const rootQuat = rootRef.current.getWorldQuaternion(new Quaternion());
+      const cameraDir = new Vector3()
+        .subVectors(rootRef.current.getWorldPosition(new Vector3()), camera.position)
+        .normalize();
+      const localCameraDir = cameraDir.clone().applyQuaternion(rootQuat.clone().invert());
+
+      let bestIndex = 0;
+      let bestDot = -Infinity;
+      for (const face of faces) {
+        const dot = -face.normal.dot(localCameraDir);
+        if (dot > bestDot) {
+          bestDot = dot;
+          bestIndex = face.index;
+        }
+      }
+      return bestIndex;
+    };
+
+    const collectLayerMovables = (faceIndex: number): Movable[] => {
+      const face = faces[faceIndex];
+      const result: Movable[] = [];
+
+      // Pieces: any piece group whose current world position lies on this face's plane.
+      for (const [id, group] of pieceGroupsRef.current.entries()) {
+        const distance = group.position.dot(face.normal) - face.center.dot(face.normal);
+        if (Math.abs(distance) < 1e-2) {
+          result.push({
+            id,
+            group,
+            basePosition: group.position.clone(),
+            baseQuaternion: group.quaternion.clone(),
+          });
+        }
+      }
+
+      // The face plate of this face is also part of the layer.
+      const plateGroup = facePlateGroupsRef.current.get(faceIndex);
+      if (plateGroup) {
+        result.push({
+          id: `plate-${faceIndex}`,
+          group: plateGroup,
+          basePosition: plateGroup.position.clone(),
+          baseQuaternion: plateGroup.quaternion.clone(),
+        });
+      }
+      return result;
+    };
+
+    const rotateFront = (direction: 1 | -1) => {
+      if (animationRef.current) return false;
+      const faceIndex = frontFaceRef.current >= 0 ? frontFaceRef.current : detectFrontFace();
+      if (faceIndex < 0) return false;
+
+      const face = faces[faceIndex];
+      const movables = collectLayerMovables(faceIndex);
+      if (movables.length === 0) return false;
+
+      // F: clockwise from observer = -72° around outward normal.
+      const angle = direction * -((Math.PI * 2) / 5);
+
+      animationRef.current = {
+        axis: face.normal.clone(),
+        pivot: face.center.clone(),
+        angle,
+        elapsed: 0,
+        movables,
+      };
+      return true;
+    };
+
+    useImperativeHandle(ref, () => ({
+      rotateFront,
+      isAnimating: () => animationRef.current !== null,
+    }));
+
+    useFrame((_, delta) => {
+      if (!rootRef.current) return;
+
+      // Drive any active rotation animation.
+      const anim = animationRef.current;
+      if (anim) {
+        anim.elapsed = Math.min(anim.elapsed + delta, ROTATION_DURATION);
+        const t = anim.elapsed / ROTATION_DURATION;
+        // Smoothstep easing.
+        const eased = t * t * (3 - 2 * t);
+        const currentAngle = anim.angle * eased;
+        const stepQuat = new Quaternion().setFromAxisAngle(anim.axis, currentAngle);
+
+        for (const m of anim.movables) {
+          const offset = m.basePosition.clone().sub(anim.pivot);
+          offset.applyQuaternion(stepQuat);
+          m.group.position.copy(offset.add(anim.pivot));
+          m.group.quaternion.copy(stepQuat).multiply(m.baseQuaternion);
+        }
+
+        if (anim.elapsed >= ROTATION_DURATION) {
+          // Bake: snap each movable to the exact final transform to avoid drift.
+          const finalQuat = new Quaternion().setFromAxisAngle(anim.axis, anim.angle);
+          for (const m of anim.movables) {
+            const offset = m.basePosition.clone().sub(anim.pivot);
+            offset.applyQuaternion(finalQuat);
+            m.group.position.copy(offset.add(anim.pivot));
+            m.group.quaternion.copy(finalQuat).multiply(m.baseQuaternion);
+          }
+          animationRef.current = null;
+        }
+      }
+
+      // Front-face detection (paused while animating to avoid jitter).
+      if (!animationRef.current && onFrontFaceChange) {
+        const idx = detectFrontFace();
+        frontFaceRef.current = idx;
+        if (idx !== lastFrontFace.current) {
+          lastFrontFace.current = idx;
+          onFrontFaceChange(idx);
+        }
+      }
+    });
+
+    return (
+      <group ref={rootRef} rotation={[0.18, -0.35, 0.1]}>
+        {faces.map((face) => {
+          const { position, quaternion } = computeFacePlateTransform(face);
+          return (
+            <group
+              key={`plate-${face.index}`}
+              ref={(g) => {
+                if (g) facePlateGroupsRef.current.set(face.index, g);
+                else facePlateGroupsRef.current.delete(face.index);
+              }}
+              position={position}
+              quaternion={quaternion}
+            >
+              <mesh geometry={geometries.pentagonGeometry}>
+                <meshStandardMaterial
+                  color="#020617"
+                  roughness={0.82}
+                  metalness={0.18}
+                  side={DoubleSide}
+                />
+              </mesh>
+            </group>
+          );
+        })}
+
+        {pieces.map((piece) => (
+          <group
+            key={piece.slot.id}
+            name={piece.slot.id}
+            ref={(g) => {
+              if (g) pieceGroupsRef.current.set(piece.slot.id, g);
+              else pieceGroupsRef.current.delete(piece.slot.id);
+            }}
+            position={piece.slot.center}
+            quaternion={piece.slot.quaternion}
+          >
+            {piece.stickers.map((sticker, idx) => (
+              <StickerMesh
+                key={`${piece.slot.id}-${sticker.face.index}-${idx}`}
+                spec={sticker}
+                slot={piece.slot}
+                geometries={geometries}
+                showLabel={showLabels}
+              />
+            ))}
+          </group>
+        ))}
+      </group>
+    );
+  },
+);
+
+// Standalone face component used by the single-face preview canvas.
+type FaceSpec = {
+  center: Vector3;
+  quaternion: Quaternion;
+  pentagonRadius: number;
+  color: string;
+  label: string;
+};
+
+export function MegaminxFace({ face }: { face: FaceSpec }) {
+  const { center, quaternion, pentagonRadius, color, label } = face;
+  const geometries = useMemo(() => buildStickerGeometries(pentagonRadius), [pentagonRadius]);
+
+  // Layout (face-local 2D, +x to the right, +y up):
+  // - corner sticker i is anchored at the pentagon vertex pointing toward angle (-i * 72°)
+  // - edge sticker i is anchored at the midpoint of the edge between vertices i and i+1, at (-i * 72° + 36°)
+  const labelFontSize = pentagonRadius * 0.1;
+  const cornerLabelRadius = pentagonRadius * 0.62;
+  const edgeLabelRadius = pentagonRadius * 0.5;
+  const labelStyle = {
+    color: "#f8fafc",
+    outlineColor: "#0f172a",
+    outlineWidth: labelFontSize * 0.18,
+    outlineBlur: labelFontSize * 0.04,
+    fontSize: labelFontSize,
+    fontWeight: 600 as const,
+  };
 
   return (
-    <group ref={groupRef} rotation={[0.18, -0.35, 0.1]}>
-      {faces.map((face) => (
-        <MegaminxFace key={face.label} face={face} />
-      ))}
+    <group name={label} position={center} quaternion={quaternion}>
+      <mesh geometry={geometries.pentagonGeometry}>
+        <meshStandardMaterial color="#020617" roughness={0.82} metalness={0.18} side={DoubleSide} />
+      </mesh>
+
+      <mesh name="center" geometry={geometries.centerGeometry} position={[0, 0, 0.026]}>
+        <meshStandardMaterial color={color} roughness={0.45} metalness={0.04} side={DoubleSide} />
+      </mesh>
+      <Text position={[0, 0, 0.03]} anchorX="center" anchorY="middle" {...labelStyle}>
+        M
+      </Text>
+
+      {Array.from({ length: 5 }).map((_, i) => {
+        const cornerAngle = ((Math.PI * 2) / 5) * -i;
+        const edgeAngle = ((Math.PI * 2) / 5) * -i + Math.PI / 5;
+        return (
+          <group key={i}>
+            <group rotation={[0, 0, ((Math.PI * 2) / 5) * -i]}>
+              <mesh name={`corner-${i}`} geometry={geometries.cornerGeometry} position={[0, 0, 0.026]}>
+                <meshStandardMaterial color={color} roughness={0.45} metalness={0.04} side={DoubleSide} />
+              </mesh>
+              <mesh name={`edge-${i}`} geometry={geometries.edgeGeometry} position={[0, 0, 0.026]}>
+                <meshStandardMaterial color={color} roughness={0.45} metalness={0.04} side={DoubleSide} />
+              </mesh>
+            </group>
+            <Text
+              position={[Math.cos(cornerAngle) * cornerLabelRadius, Math.sin(cornerAngle) * cornerLabelRadius, 0.03]}
+              anchorX="center"
+              anchorY="middle"
+              {...labelStyle}
+            >
+              {`C${i}`}
+            </Text>
+            <Text
+              position={[Math.cos(edgeAngle) * edgeLabelRadius, Math.sin(edgeAngle) * edgeLabelRadius, 0.03]}
+              anchorX="center"
+              anchorY="middle"
+              {...labelStyle}
+            >
+              {`E${i}`}
+            </Text>
+          </group>
+        );
+      })}
     </group>
   );
 }

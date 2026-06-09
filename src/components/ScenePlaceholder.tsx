@@ -20,10 +20,6 @@ export function ScenePlaceholder() {
           </div>
 
           <div className="relative mx-auto h-[360px] w-full overflow-hidden rounded-[1.5rem] border border-white/10 bg-slate-950/80 md:h-[430px]">
-            <div className="absolute inset-x-6 top-6 z-10 flex items-center justify-between text-xs text-slate-400">
-              <span>12 个五边形面</span>
-              <span>正十二面体布局</span>
-            </div>
             <MegaminxCanvas />
           </div>
 
