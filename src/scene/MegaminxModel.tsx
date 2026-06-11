@@ -477,6 +477,19 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
       return true;
     };
 
+    const setGroupRenderOrder = (group: Group, order: number, depthTest = true) => {
+      group.traverse((child) => {
+        if ((child as any).isMesh) {
+          child.renderOrder = order;
+          const mat = (child as any).material;
+          if (mat) {
+            mat.depthTest = depthTest;
+            mat.needsUpdate = true;
+          }
+        }
+      });
+    };
+
     const rotateFace = (faceIndex: number, direction: 1 | -1): boolean => {
       if (animationRef.current) return false;
       if (faceIndex < 0) return false;
@@ -485,7 +498,13 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
       const movables = collectLayerMovables(faceIndex);
       if (movables.length === 0) return false;
 
-      const angle = direction * -((Math.PI * 2) / 5);
+      // 调试：24° 方便观察覆盖问题，正式值为 (Math.PI * 2) / 5
+      const angle = direction * -((Math.PI * 72) / 180);
+
+      // 方案 D+：旋转开始时提高 renderOrder 并关闭 depthTest
+      for (const m of movables) {
+        setGroupRenderOrder(m.group, 10, false);
+      }
 
       animationRef.current = {
         axis: face.normal.clone(),
@@ -635,6 +654,8 @@ export const MegaminxModel = forwardRef<MegaminxModelHandle, MegaminxModelProps>
             offset.applyQuaternion(finalQuat);
             m.group.position.copy(offset.add(anim.pivot));
             m.group.quaternion.copy(finalQuat).multiply(m.baseQuaternion);
+            // 方案 D+：动画结束恢复 renderOrder 和 depthTest
+            setGroupRenderOrder(m.group, 0, true);
           }
           animationRef.current = null;
 
